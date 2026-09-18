@@ -1,0 +1,62 @@
+{
+  "name": "vaibhavmungal/shopnest-ecommerce",
+  "description": "A full-featured PHP E-Commerce platform with admin panel, shopping cart, wishlist, and more.",
+  "type": "project",
+  "license": "MIT",
+  "version": "1.0.0",
+  "authors": [
+    {
+      "name": "Vaibhav Mungal",
+      "homepage": "https://github.com/Vaibhavmungal"
+    }
+  ],
+  "require": {
+    "php": ">=8.2",
+    "ext-pdo": "*",
+    "ext-pdo_mysql": "*",
+    "ext-gd": "*",
+    "ext-zip": "*",
+    "ext-mysqli": "*",
+    "ext-json": "*",
+    "ext-mbstring": "*",
+    "ext-openssl": "*"
+  },
+  "require-dev": {
+    "phpunit/phpunit": "^11.0",
+    "squizlabs/php_codesniffer": "^3.9",
+    "phpstan/phpstan": "^1.11"
+  },
+  "autoload": {
+    "psr-4": {
+      "ShopNest\\": "src/"
+    },
+    "files": [
+      "includes/functions.php"
+    ]
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "ShopNest\\Tests\\": "tests/"
+    }
+  },
+  "scripts": {
+    "lint": "find . -name '*.php' ! -path './vendor/*' ! -path './target/*' -exec php -l {} \\;",
+    "phpcs": "phpcs --standard=PSR12 --extensions=php --ignore=vendor/,uploads/,logs/ .",
+    "phpstan": "phpstan analyse --level=5 --memory-limit=256M",
+    "test": "phpunit --testdox",
+    "check": [
+      "@lint",
+      "@phpcs",
+      "@phpstan"
+    ]
+  },
+  "config": {
+    "optimize-autoloader": true,
+    "sort-packages": true,
+    "allow-plugins": {
+      "phpstan/extension-installer": true
+    }
+  },
+  "minimum-stability": "stable",
+  "prefer-stable": true
+}

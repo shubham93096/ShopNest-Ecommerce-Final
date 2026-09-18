@@ -1,0 +1,15 @@
+parameters:
+    level: 5
+    paths:
+        - api
+        - config
+        - customer
+        - includes
+        - products
+        - admin
+    excludePaths:
+        - vendor
+        - uploads
+        - logs
+        - tools
+    checkMissingIterableValueType: false

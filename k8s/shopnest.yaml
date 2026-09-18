@@ -1,0 +1,224 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shopnest
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shopnest-config
+  namespace: shopnest
+data:
+  APP_NAME: "ShopNest"
+  APP_ENV: "production"
+  APP_DEBUG: "false"
+  APP_URL: "http://shopnest.example.com"
+  DB_HOST: "mysql-service"
+  DB_PORT: "3306"
+  DB_NAME: "aws_ecommerce"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: shopnest-secret
+  namespace: shopnest
+type: Opaque
+stringData:
+  DB_USER: "ecommerce_user"
+  DB_PASS: "YourStrongPassword123!"
+  DB_PASSWORD: "YourStrongPassword123!"
+  MYSQL_ROOT_PASSWORD: "YourStrongPassword123!"
+---
+# ============================================================
+# MySQL Database Deployment & Internal Service
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysql
+  namespace: shopnest
+  labels:
+    app: mysql
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8.0
+          args:
+            - "--bind-address=0.0.0.0"
+            - "--default-authentication-plugin=mysql_native_password"
+            - "--character-set-server=utf8mb4"
+            - "--collation-server=utf8mb4_unicode_ci"
+          ports:
+            - containerPort: 3306
+              name: mysql
+          env:
+            - name: MYSQL_ROOT_HOST
+              value: "%"
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: shopnest-secret
+                  key: MYSQL_ROOT_PASSWORD
+            - name: MYSQL_DATABASE
+              valueFrom:
+                configMapKeyRef:
+                  name: shopnest-config
+                  key: DB_NAME
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: shopnest-secret
+                  key: DB_USER
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: shopnest-secret
+                  key: DB_PASSWORD
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          volumeMounts:
+            - name: mysql-data
+              mountPath: /var/lib/mysql
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "mysqladmin ping -h 127.0.0.1 -u root -p\"$MYSQL_ROOT_PASSWORD\""
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "mysqladmin ping -h 127.0.0.1 -u root -p\"$MYSQL_ROOT_PASSWORD\""
+            initialDelaySeconds: 45
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+      volumes:
+        - name: mysql-data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-service
+  namespace: shopnest
+spec:
+  type: ClusterIP
+  selector:
+    app: mysql
+  ports:
+    - protocol: TCP
+      port: 3306
+      targetPort: 3306
+---
+# ============================================================
+# ShopNest E-Commerce Web Application Deployment
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shopnest-app
+  namespace: shopnest
+  labels:
+    app: shopnest
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: shopnest
+  template:
+    metadata:
+      labels:
+        app: shopnest
+    spec:
+      imagePullSecrets:
+        - name: dockerhub-secret
+      containers:
+        - name: app
+          image: vaibhavvv85/aws-ecommerce:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80
+              name: http
+          envFrom:
+            - configMapRef:
+                name: shopnest-config
+            - secretRef:
+                name: shopnest-secret
+          volumeMounts:
+            - name: uploads-volume
+              mountPath: /var/www/html/uploads
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          livenessProbe:
+            httpGet:
+              path: /health.php
+              port: 80
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /health.php
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+      volumes:
+        - name: uploads-volume
+          emptyDir: {}
+---
+# ============================================================
+# ShopNest External Load Balancer Service (AWS ELB)
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: shopnest-service
+  namespace: shopnest
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-healthcheck-path: "/health.php"
+    service.beta.kubernetes.io/aws-load-balancer-healthcheck-interval: "10"
+    service.beta.kubernetes.io/aws-load-balancer-healthcheck-timeout: "5"
+    service.beta.kubernetes.io/aws-load-balancer-healthcheck-healthy-threshold: "2"
+    service.beta.kubernetes.io/aws-load-balancer-healthcheck-unhealthy-threshold: "3"
+spec:
+  type: LoadBalancer
+  selector:
+    app: shopnest
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80

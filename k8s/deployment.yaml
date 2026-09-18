@@ -1,0 +1,265 @@
+# ============================================================
+# 1. ConfigMap — Non-Sensitive Application Configuration
+#    Stores environment variables like DB host, DB name, port,
+#    and environment mode shared across containers.
+# ============================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shopnest-config
+  labels:
+    app.kubernetes.io/name: aws-ecommerce
+data:
+  APP_ENV: "production"
+  DB_HOST: "mysql-service"
+  DB_NAME: "aws_ecommerce"
+  DB_PORT: "3306"
+---
+# ============================================================
+# 2. Secret — Sensitive Database & Root Credentials
+#    Stores encrypted/opaque passwords and usernames securely
+#    without exposing them in plaintext inside application code.
+# ============================================================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: shopnest-secret
+  labels:
+    app.kubernetes.io/name: aws-ecommerce
+type: Opaque
+stringData:
+  DB_USER: "ecommerce_user"
+  DB_PASSWORD: "YourStrongPassword123!"
+  DB_PASS: "YourStrongPassword123!"
+  MYSQL_ROOT_PASSWORD: "YourStrongPassword123!"
+---
+# ============================================================
+# 3. MySQL Deployment — Database Engine Deployment
+#    Deploys MySQL 8.0 server with local disk storage (/var/data),
+#    UTF-8 encoding, native password auth, and health probes.
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysql
+  labels:
+    app.kubernetes.io/name: aws-ecommerce
+    app: mysql
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8.0
+          args:
+            - "--bind-address=0.0.0.0"
+            - "--default-authentication-plugin=mysql_native_password"
+            - "--character-set-server=utf8mb4"
+            - "--collation-server=utf8mb4_unicode_ci"
+          ports:
+            - containerPort: 3306
+              name: mysql
+          env:
+            - name: MYSQL_ROOT_HOST
+              value: "%"
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: shopnest-secret
+                  key: MYSQL_ROOT_PASSWORD
+            - name: MYSQL_DATABASE
+              valueFrom:
+                configMapKeyRef:
+                  name: shopnest-config
+                  key: DB_NAME
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: shopnest-secret
+                  key: DB_USER
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: shopnest-secret
+                  key: DB_PASSWORD
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: mysql-storage
+              mountPath: /var/lib/mysql
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "mysqladmin ping -h 127.0.0.1 -u root -p\"$MYSQL_ROOT_PASSWORD\""
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "mysqladmin ping -h 127.0.0.1 -u root -p\"$MYSQL_ROOT_PASSWORD\""
+            initialDelaySeconds: 45
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+      volumes:
+        - name: mysql-storage
+          hostPath:
+            path: /var/data/shopnest-mysql
+            type: DirectoryOrCreate
+---
+# ============================================================
+# 4. MySQL Service — Internal Database Networking
+#    Creates a stable ClusterIP internal DNS endpoint (mysql-service:3306)
+#    allowing PHP web containers to reliably communicate with MySQL.
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-service
+  labels:
+    app.kubernetes.io/name: aws-ecommerce
+spec:
+  type: ClusterIP
+  selector:
+    app: mysql
+  ports:
+    - port: 3306
+      targetPort: 3306
+---
+# ============================================================
+# 5. Ecommerce App Deployment — Web Application Deployment
+#    Deploys 2 replicas of ShopNest (PHP 8.2 + Apache) with
+#    rolling zero-downtime updates, resource limits, and health checks.
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ecommerce-app
+  labels:
+    app.kubernetes.io/name: aws-ecommerce
+    app: ecommerce-web
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: ecommerce-web
+  template:
+    metadata:
+      labels:
+        app: ecommerce-web
+    spec:
+      containers:
+        - name: web
+          image: vaibhavvv85/aws-ecommerce:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80
+              name: http
+          envFrom:
+            - configMapRef:
+                name: shopnest-config
+            - secretRef:
+                name: shopnest-secret
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /health.php
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /health.php
+              port: 80
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 5
+---
+# ============================================================
+# 6. Ecommerce Service — External Traffic & Load Balancing
+#    Provisions an AWS Classic LoadBalancer (Port 80) and NodePort
+#    (Port 30080) for external user access and browser traffic.
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: ecommerce-service
+  labels:
+    app.kubernetes.io/name: aws-ecommerce
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-healthcheck-path: "/health.php"
+    service.beta.kubernetes.io/aws-load-balancer-healthcheck-interval: "10"
+    service.beta.kubernetes.io/aws-load-balancer-healthcheck-timeout: "5"
+    service.beta.kubernetes.io/aws-load-balancer-healthcheck-healthy-threshold: "2"
+    service.beta.kubernetes.io/aws-load-balancer-healthcheck-unhealthy-threshold: "3"
+spec:
+  type: LoadBalancer
+  selector:
+    app: ecommerce-web
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+      nodePort: 30080
+
+# ============================================================
+#  ShopNest Deployment & Access Quick Reference
+# ============================================================
+#
+# 1. Local Kubernetes (Docker Desktop / Minikube / K3s / Kind):
+#    - Apply manifests:
+#        kubectl apply -f k8s/deployment.yaml
+#    - Access on Docker Desktop:
+#        http://localhost:30080/   or   http://localhost:80/
+#    - Access on Minikube:
+#        minikube service ecommerce-service
+#        (or run: minikube tunnel)
+#    - Health check:
+#        http://localhost:30080/health.php
+#
+# 2. AWS EKS Production:
+#    - AWS LoadBalancer: http://<aws-elb-dns>/
+#    - Direct NodePort:  http://<worker-node-public-ip>:30080/
+#
+# 3. Demo Credentials:
+#    - Admin Login:    admin@shopnest.com    / Admin@123
+#    - Customer Login: customer@shopnest.com / Customer@123
+#
+# 4. Storage & Network:
+#    - MySQL Storage: hostPath -> /var/data/shopnest-mysql
+#    - Internal DB Host: mysql-service:3306
+# ============================================================
